@@ -21,6 +21,7 @@ builder.Services.AddCors(options =>
         // your deployed client origin before shipping to production.
         policy.WithOrigins(
                 "https://localhost:5001",
+                "http://localhost:5001",
                 "http://localhost:5000",
                 "https://localhost:7080",
                 "http://localhost:5080")
