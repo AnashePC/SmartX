@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using Microsoft.AspNetCore.SignalR;
-using SmartX.Api.Hubs;
 using SmartX.Shared.Dtos;
 using SmartX.Shared.Models;
 
@@ -8,7 +6,9 @@ namespace SmartX.Api.Services;
 
 public interface ITelemetryStore
 {
-    Task<TelemetryFeedItem> IngestAsync(TelemetryIngestRequest request, CancellationToken ct = default);
+    /// <summary>Processes one packet that has been dequeued from the pipeline (priority lane first).</summary>
+    Task<TelemetryFeedItem> ProcessAsync(QueuedPacket packet, CancellationToken ct = default);
+
     IReadOnlyList<TelemetryFeedItem> GetRecentFeed(int count = 50);
     SensorReading? GetLastNumericReading(string sensorId);
 
@@ -17,16 +17,15 @@ public interface ITelemetryStore
 }
 
 /// <summary>
-/// Central ingestion pipeline. This is where the four required C# mechanics
-/// meet real behaviour rather than being isolated demo methods:
-///   - Generics:     TelemetryPacket&lt;T&gt; carries the strongly-typed sample.
-///   - Operators:    SensorReading '-' computes the delta used for anomaly detection,
-///                   and '+' powers the /aggregate endpoint.
-///   - Arrays:       recent numeric history per sensor is kept in a small
-///                   rolling array (see RecentHistory) before being copied
-///                   into the List&lt;TelemetryFeedItem&gt; feed.
-///   - Recursion:    handled separately by DeploymentValidator, invoked from
-///                   the deployment endpoints against the same store's data.
+/// Processing stage of the ingestion pipeline. Part 1 mechanics are unchanged:
+///   - Generics:   TelemetryPacket&lt;T&gt; carries the strongly-typed sample.
+///   - Operators:  SensorReading '-' computes the delta used for anomaly detection, '+' powers /aggregate.
+///   - Arrays:     a small rolling array holds each sensor's recent numeric history.
+/// Part 2 adds what happens AFTER a packet is validated:
+///   - the device registry Dictionary is updated (O(1) lookup by sensor id),
+///   - the SortedDictionary timeline gets a new point,
+///   - the alert HashSet raises (or suppresses a duplicate of) a critical alert,
+///   - and the result is pushed to every connected dashboard over SignalR.
 /// </summary>
 public sealed class TelemetryStore : ITelemetryStore
 {
@@ -36,28 +35,41 @@ public sealed class TelemetryStore : ITelemetryStore
     private readonly ConcurrentDictionary<string, SensorReading> _lastNumericReading = new();
     private readonly ConcurrentDictionary<string, double[]> _recentHistory = new();
     private readonly ConcurrentQueue<TelemetryFeedItem> _feed = new();
-    private readonly IHubContext<TelemetryHub> _hub;
+    private readonly IGatewayNotifier _notifier;
+    private readonly IDeviceStateStore _devices;
+    private readonly ITimelineStore _timeline;
+    private readonly IAlertTracker _alerts;
+    private readonly IActionSuggestionEngine _engine;
     private readonly ILogger<TelemetryStore> _logger;
     private readonly double _environmentalDeltaThreshold;
     private readonly double _powerDeltaThreshold;
 
-    public TelemetryStore(IHubContext<TelemetryHub> hub, IConfiguration config, ILogger<TelemetryStore> logger)
+    public TelemetryStore(
+        IGatewayNotifier notifier,
+        IDeviceStateStore devices,
+        ITimelineStore timeline,
+        IAlertTracker alerts,
+        IActionSuggestionEngine engine,
+        IConfiguration config,
+        ILogger<TelemetryStore> logger)
     {
-        _hub = hub;
+        _notifier = notifier;
+        _devices = devices;
+        _timeline = timeline;
+        _alerts = alerts;
+        _engine = engine;
         _logger = logger;
         _environmentalDeltaThreshold = config.GetValue("SmartX:AnomalyThresholds:EnvironmentalDelta", 8.0);
         _powerDeltaThreshold = config.GetValue("SmartX:AnomalyThresholds:PowerDeltaWatts", 150.0);
     }
 
-    public async Task<TelemetryFeedItem> IngestAsync(TelemetryIngestRequest request, CancellationToken ct = default)
+    public async Task<TelemetryFeedItem> ProcessAsync(QueuedPacket queued, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(request.SensorId))
-        {
-            throw new ArgumentException("SensorId is required.", nameof(request));
-        }
-
+        var request = queued.Request;
         var isAnomaly = false;
         string displayValue;
+        double? numeric = null;
+        bool? boolean = null;
 
         switch (request.Kind)
         {
@@ -66,6 +78,7 @@ public sealed class TelemetryStore : ITelemetryStore
                 // Generic packet stays box-free right up until ToDisplayString().
                 var packet = new TelemetryPacket<bool>(request.SensorId, request.BooleanValue, request.Kind, request.Unit);
                 displayValue = packet.Value ? "ON" : "OFF";
+                boolean = packet.Value;
                 break;
             }
             case TelemetryValueKind.Integer:
@@ -73,6 +86,7 @@ public sealed class TelemetryStore : ITelemetryStore
                 var packet = new TelemetryPacket<int>(request.SensorId, (int)request.NumericValue, request.Kind, request.Unit);
                 isAnomaly = TrackAndCheckAnomaly(request.SensorId, packet.Value, _powerDeltaThreshold, request.Unit);
                 displayValue = packet.ToDisplayString();
+                numeric = packet.Value;
                 break;
             }
             case TelemetryValueKind.Float:
@@ -81,24 +95,107 @@ public sealed class TelemetryStore : ITelemetryStore
                 var packet = new TelemetryPacket<float>(request.SensorId, (float)request.NumericValue, request.Kind, request.Unit);
                 isAnomaly = TrackAndCheckAnomaly(request.SensorId, packet.Value, _environmentalDeltaThreshold, request.Unit);
                 displayValue = packet.ToDisplayString();
+                numeric = packet.Value;
                 break;
             }
+        }
+
+        var now = DateTime.UtcNow;
+        var isCritical = queued.Lane == AlertPriority.Critical;
+        isAnomaly |= isCritical;
+
+        // 1) Device registry: O(1) dictionary lookup/update by sensor id.
+        var device = _devices.RecordTelemetry(request.SensorId, request.Kind, numeric, boolean,
+            request.Unit, displayValue, isAnomaly, now);
+
+        // 2) Ordered history: SortedDictionary keyed by timestamp.
+        _timeline.Append(new TimelinePoint
+        {
+            SensorId = request.SensorId,
+            TimestampUtc = now,
+            Value = numeric ?? (boolean == true ? 1 : 0),
+            IsAnomaly = isAnomaly,
+            Display = boolean.HasValue ? displayValue : $"{numeric:0.##}{request.Unit}"
+        });
+
+        // 3) Alerts: HashSet-backed, duplicate-suppressing.
+        var alertsChanged = await EvaluateAlertsAsync(queued, device, ct);
+
+        // Re-read so the pushed snapshot reflects any alert changes just made.
+        if (_devices.TryGetDevice(request.SensorId, out var latest))
+        {
+            device = latest;
         }
 
         var feedItem = new TelemetryFeedItem
         {
             SensorId = request.SensorId,
+            DeviceName = device.Name,
             DisplayValue = displayValue,
-            TimestampUtc = DateTime.UtcNow,
-            IsAnomaly = isAnomaly
+            TimestampUtc = now,
+            IsAnomaly = isAnomaly,
+            Lane = queued.Lane,
+            QueueWaitMs = (int)Math.Round(queued.WaitMs)
         };
 
         PushToFeed(feedItem);
 
-        await _hub.Clients.Group("dashboard-viewers")
-            .SendAsync("TelemetryReceived", feedItem, ct);
+        await _notifier.TelemetryAsync(feedItem, ct);
+        await _notifier.DeviceChangedAsync(device, ct);
+
+        if (alertsChanged)
+        {
+            await _notifier.SuggestionsAsync(_engine.GetSuggestions(), ct);
+        }
 
         return feedItem;
+    }
+
+    private async Task<bool> EvaluateAlertsAsync(QueuedPacket queued, DeviceState device, CancellationToken ct)
+    {
+        var deviceId = device.DeviceId;
+        var changed = false;
+
+        // A packet from a node we had marked disconnected proves it is back.
+        var reconnected = _alerts.ClearDisconnect(deviceId);
+        if (reconnected is not null)
+        {
+            changed = true;
+            await _notifier.AlertClearedAsync(reconnected, ct);
+        }
+
+        if (queued.Lane == AlertPriority.Critical && queued.Classification.Kind is { } kind)
+        {
+            var alert = new ActiveAlert
+            {
+                Key = ActiveAlert.BuildKey(deviceId, kind),
+                DeviceId = deviceId,
+                DeviceName = device.Name,
+                Kind = kind,
+                Message = queued.Classification.Message,
+                Priority = AlertPriority.Critical,
+                RaisedUtc = DateTime.UtcNow
+            };
+
+            if (_alerts.TryRaise(alert))
+            {
+                changed = true;
+                _engine.RecordAlert(alert);
+                await _notifier.AlertRaisedAsync(alert, ct);
+            }
+            // else: duplicate of an alert that is already active — nothing more to do.
+        }
+        else if (queued.Request.Kind != TelemetryValueKind.Boolean)
+        {
+            foreach (var cleared in _alerts.ObserveNormal(deviceId))
+            {
+                changed = true;
+                await _notifier.AlertClearedAsync(cleared, ct);
+            }
+        }
+
+        _devices.SetActiveAlerts(deviceId, _alerts.KindsForDevice(deviceId));
+        return changed;
     }
 
     /// <summary>
