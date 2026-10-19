@@ -1,0 +1,343 @@
+@page "/command-stream"
+@inherits StateAwareComponent
+@inject SmartXApiClient Api
+
+<PageTitle>Real-Time Command Stream — Smart-X</PageTitle>
+
+<h1>Real-Time Command Stream &amp; History</h1>
+<p class="subtitle">
+    Live sensor data from every node, manual overrides with undo, and proactive suggestions —
+    all driven by the gateway's queues, dictionaries, sets and prediction engine.
+</p>
+
+<PipelineStatsBar />
+
+<div class="cs-grid">
+    <SuggestionsPanel />
+    <AlertsPanel />
+</div>
+
+<!-- ======================= search & filter ======================= -->
+<div class="form-card filter-bar">
+    <div class="filter-field filter-search">
+        <label>Search devices</label>
+        <input value="@State.Ui.Search" @oninput="OnSearchInput" placeholder="Try &quot;pump&quot;, &quot;moisture&quot;, or a node id…" />
+    </div>
+    <div class="filter-field">
+        <label>Category</label>
+        <select value="@(State.Ui.Category?.ToString() ?? "")" @onchange="OnCategoryChanged">
+            <option value="">All categories</option>
+            <option value="@SensorCategory.Environmental">Environmental</option>
+            <option value="@SensorCategory.PowerConsumption">Power consumption</option>
+            <option value="@SensorCategory.Actuator">Actuator</option>
+        </select>
+    </div>
+    <div class="filter-field">
+        <label>State</label>
+        <select value="@(State.Ui.Status?.ToString() ?? "")" @onchange="OnStatusChanged">
+            <option value="">Any state</option>
+            <option value="@DeviceStatus.Online">Online</option>
+            <option value="@DeviceStatus.Alert">Alert active</option>
+            <option value="@DeviceStatus.Disconnected">Disconnected</option>
+            <option value="@DeviceStatus.AwaitingData">Awaiting data</option>
+        </select>
+    </div>
+    <button class="cta-button cta-secondary filter-clear" @onclick="ClearFilters">Clear</button>
+</div>
+
+<!-- ======================= device grid ======================= -->
+@if (State.Devices.Count == 0)
+{
+    <div class="form-card"><p class="muted">No devices yet — waiting for the gateway…</p></div>
+}
+else
+{
+    <p class="result-count">Showing @FilteredDevices.Count of @State.Devices.Count devices · devices with an insight or alert are listed first</p>
+
+    <div class="device-grid">
+        @foreach (var device in FilteredDevices)
+        {
+            <DeviceCard @key="device.DeviceId"
+                        Device="device"
+                        Selected="@(string.Equals(State.Ui.SelectedDeviceId, device.DeviceId, StringComparison.OrdinalIgnoreCase))"
+                        Insight="InsightFor(device.DeviceId)"
+                        OnSelect="SelectDeviceAsync"
+                        OnCommand="IssueFromCardAsync" />
+        }
+    </div>
+
+    @if (FilteredDevices.Count == 0)
+    {
+        <div class="form-card"><p class="muted">No devices match those filters.</p></div>
+    }
+}
+
+@if (!string.IsNullOrEmpty(_cardMessage))
+{
+    <p class="form-message">@_cardMessage</p>
+}
+
+<!-- ======================= timeline + override ======================= -->
+<div class="cs-grid">
+    <div class="form-card panel">
+        <h2>Sensor Timeline</h2>
+        @if (SelectedDevice is { } selected)
+        {
+            <p class="panel-note">@selected.Name (@selected.DeviceId) — served from the API's timestamp-sorted dictionary.</p>
+            <TimelineChart Title="@($"{selected.Name} — {(string.IsNullOrEmpty(selected.Unit) ? "state (1 = ON)" : selected.Unit)}")"
+                           Points="_timeline"
+                           CriticalLow="@CriticalLowFor(selected)"
+                           CriticalHigh="@CriticalHighFor(selected)" />
+        }
+        else
+        {
+            <p class="muted">Select a device card (or click an alert or insight) to plot its timeline.</p>
+        }
+
+        <h3>History log <small>(newest first, whole mesh)</small></h3>
+        <table class="data-table compact">
+            <thead><tr><th>Time (UTC)</th><th>Sensor</th><th>Reading</th></tr></thead>
+            <tbody>
+                @foreach (var entry in _history)
+                {
+                    <tr class="@(entry.IsAnomaly ? "row-anomaly" : "")">
+                        <td>@entry.TimestampUtc.ToString("HH:mm:ss.fff")</td>
+                        <td>@NameOf(entry.SensorId)</td>
+                        <td>@entry.Display</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <div>
+        <CommandPanel />
+        <SimulationPanel />
+    </div>
+</div>
+
+<!-- ======================= live stream ======================= -->
+<div class="form-card">
+    <h2>Live Telemetry Stream</h2>
+    <p class="panel-note">Newest first. The lane column shows which queue each packet travelled through and how long it waited.</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Time (UTC)</th>
+                <th>Device</th>
+                <th>Reading</th>
+                <th>Lane</th>
+                <th>Queue wait</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in State.Feed.Take(15))
+            {
+                <tr class="@(item.Lane == AlertPriority.Critical ? "row-critical" : item.IsAnomaly ? "row-anomaly" : "")">
+                    <td>@item.TimestampUtc.ToString("HH:mm:ss")</td>
+                    <td>@(string.IsNullOrEmpty(item.DeviceName) ? item.SensorId : item.DeviceName)</td>
+                    <td>@item.DisplayValue</td>
+                    <td>
+                        @if (item.Lane == AlertPriority.Critical)
+                        {
+                            <span class="lane-chip lane-priority">PRIORITY</span>
+                        }
+                        else
+                        {
+                            <span class="lane-chip lane-standard">standard</span>
+                        }
+                    </td>
+                    <td>@item.QueueWaitMs ms</td>
+                    <td>@(item.IsAnomaly ? "⚠️" : "")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private CancellationTokenSource? _searchCts;
+    private readonly CancellationTokenSource _loopCts = new();
+    private IReadOnlyList<TimelinePoint> _timeline = Array.Empty<TimelinePoint>();
+    private IReadOnlyList<TimelinePoint> _history = Array.Empty<TimelinePoint>();
+    private string _timelineFor = string.Empty;
+    private string _cardMessage = string.Empty;
+
+    // ---------------------------------------------------------------- lifecycle
+
+    protected override async Task OnInitializedAsync()
+    {
+        await State.EnsureStartedAsync(); // no-op if the layout already started it
+        await RefreshDataAsync();
+        _ = PollLoopAsync(_loopCts.Token);
+    }
+
+    public override void Dispose()
+    {
+        _loopCts.Cancel();
+        _searchCts?.Cancel();
+        base.Dispose();
+    }
+
+    /// <summary>Timeline and history come from the API's sorted structures; refresh them every two seconds.</summary>
+    private async Task PollLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                await RefreshDataAsync();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // page left — stop polling
+        }
+    }
+
+    private async Task RefreshDataAsync()
+    {
+        try
+        {
+            _history = await Api.GetHistoryAsync(12);
+
+            var selectedId = State.Ui.SelectedDeviceId;
+            if (string.IsNullOrEmpty(selectedId))
+            {
+                _timeline = Array.Empty<TimelinePoint>();
+                _timelineFor = string.Empty;
+            }
+            else
+            {
+                _timeline = await Api.GetTimelineAsync(selectedId, 60);
+                _timelineFor = selectedId;
+            }
+        }
+        catch (Exception)
+        {
+            // API briefly unavailable: keep showing the last data; the layout banner explains the outage.
+        }
+    }
+
+    // ---------------------------------------------------------------- filtering
+
+    private List<DeviceState> FilteredDevices => State.Devices.Values
+        .Where(d => MatchesText(d))
+        .Where(d => State.Ui.Category is null || d.Category == State.Ui.Category)
+        .Where(d => State.Ui.Status is null || d.Status == State.Ui.Status)
+        .OrderByDescending(Priority)
+        .ThenBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    private bool MatchesText(DeviceState device)
+    {
+        var needle = State.Ui.Search.Trim();
+        return needle.Length == 0
+               || device.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)
+               || device.DeviceId.Contains(needle, StringComparison.OrdinalIgnoreCase)
+               || device.Location.Contains(needle, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private int Priority(DeviceState device)
+    {
+        var score = device.Status switch
+        {
+            DeviceStatus.Disconnected => 30,
+            DeviceStatus.Alert => 20,
+            _ => 0
+        };
+
+        var insight = InsightFor(device.DeviceId);
+        if (insight is not null) score += 10 + (int)insight.Severity;
+
+        return score;
+    }
+
+    private AutomatedInsight? InsightFor(string deviceId) =>
+        State.Suggestions?.Insights.FirstOrDefault(i =>
+            string.Equals(i.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase));
+
+    private async Task OnSearchInput(ChangeEventArgs e)
+    {
+        State.Ui.Search = e.Value?.ToString() ?? string.Empty;
+
+        _searchCts?.Cancel();
+        _searchCts = new CancellationTokenSource();
+        var token = _searchCts.Token;
+        var text = State.Ui.Search.Trim();
+
+        if (text.Length < 2)
+        {
+            return;
+        }
+
+        try
+        {
+            // Debounce: only report a search once the operator has stopped typing.
+            await Task.Delay(900, token);
+            await Api.RecordSearchAsync(text);
+        }
+        catch (OperationCanceledException)
+        {
+            // typed again — a newer search superseded this one
+        }
+        catch (Exception)
+        {
+            // learning is best-effort; never interrupt the operator
+        }
+    }
+
+    private void OnCategoryChanged(ChangeEventArgs e) =>
+        State.Ui.Category = Enum.TryParse<SensorCategory>(e.Value?.ToString(), out var category) ? category : null;
+
+    private void OnStatusChanged(ChangeEventArgs e) =>
+        State.Ui.Status = Enum.TryParse<DeviceStatus>(e.Value?.ToString(), out var status) ? status : null;
+
+    private void ClearFilters()
+    {
+        State.Ui.Search = string.Empty;
+        State.Ui.Category = null;
+        State.Ui.Status = null;
+    }
+
+    // ---------------------------------------------------------------- selection & commands
+
+    private DeviceState? SelectedDevice =>
+        !string.IsNullOrEmpty(State.Ui.SelectedDeviceId) && State.Devices.TryGetValue(State.Ui.SelectedDeviceId, out var device)
+            ? device
+            : null;
+
+    private async Task SelectDeviceAsync(string deviceId)
+    {
+        State.Ui.SelectedDeviceId = deviceId;
+        await RefreshDataAsync();
+    }
+
+    private async Task IssueFromCardAsync(IssueCommandRequest request)
+    {
+        try
+        {
+            var result = await Api.IssueCommandAsync(request.Action, request.DeviceId);
+            _cardMessage = result.Success ? $"✅ {result.Message}" : $"⚠️ {result.Message}";
+        }
+        catch (Exception ex)
+        {
+            _cardMessage = $"⚠️ Could not reach the gateway: {ex.Message}";
+        }
+    }
+
+    private string NameOf(string sensorId) =>
+        State.Devices.TryGetValue(sensorId, out var device) ? device.Name : sensorId;
+
+    private static double? CriticalLowFor(DeviceState device) =>
+        device.Unit.Contains("moisture", StringComparison.OrdinalIgnoreCase) ? 20 : null;
+
+    private static double? CriticalHighFor(DeviceState device) =>
+        device.Unit.Contains("moisture", StringComparison.OrdinalIgnoreCase) ? 80
+        : string.Equals(device.Unit, "W", StringComparison.OrdinalIgnoreCase) ? 800
+        : null;
+}
