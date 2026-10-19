@@ -1,4 +1,5 @@
 @page "/sensors"
+@inherits StateAwareComponent
 @inject SmartXApiClient Api
 
 <PageTitle>Sensor Registration — Smart-X</PageTitle>
@@ -10,13 +11,13 @@
     <h2>New Sensor Profile</h2>
 
     <label>Device MAC Address / Unique Identifier</label>
-    <input @bind="_macAddress" placeholder="AA:BB:CC:DD:EE:FF" />
+    <input @bind="State.Registration.MacAddress" placeholder="AA:BB:CC:DD:EE:FF" />
 
     <label>Sensor Deployment Location</label>
-    <input @bind="_deploymentLocation" placeholder="Sub-Zone B -> Zone 1 -> Facility A" />
+    <input @bind="State.Registration.DeploymentLocation" placeholder="Sub-Zone B -> Zone 1 -> Facility A" />
 
     <label>Sensor Category</label>
-    <select @bind="_category">
+    <select @bind="State.Registration.Category">
         @foreach (var category in Enum.GetValues<SensorCategory>())
         {
             <option value="@category">@category</option>
@@ -37,7 +38,7 @@
     <h2>Attach Media / Config / Log File</h2>
     <p>Select a registered sensor above, then attach a config file, deployment photo, or hardware log.</p>
 
-    <select @bind="_selectedSensorId">
+    <select @bind="State.Registration.SelectedSensorId">
         <option value="">-- choose a sensor --</option>
         @foreach (var sensor in _sensors)
         {
@@ -101,13 +102,9 @@
 </div>
 
 @code {
-    private string _macAddress = string.Empty;
-    private string _deploymentLocation = string.Empty;
-    private SensorCategory _category = SensorCategory.Environmental;
     private bool _isRegistering;
     private string _registerMessage = string.Empty;
 
-    private string _selectedSensorId = string.Empty;
     private string _uploadMessage = string.Empty;
 
     private ValidationResult? _validationResult;
@@ -126,7 +123,7 @@
 
     private async Task RegisterSensorAsync()
     {
-        if (string.IsNullOrWhiteSpace(_macAddress))
+        if (string.IsNullOrWhiteSpace(State.Registration.MacAddress))
         {
             _registerMessage = "A MAC address / unique identifier is required.";
             return;
@@ -139,9 +136,9 @@
         {
             var request = new SensorRegistrationRequest
             {
-                MacAddress = _macAddress,
-                DeploymentLocation = _deploymentLocation,
-                Category = _category
+                MacAddress = State.Registration.MacAddress,
+                DeploymentLocation = State.Registration.DeploymentLocation,
+                Category = State.Registration.Category
             };
 
             var created = await Api.RegisterSensorAsync(request);
@@ -149,8 +146,8 @@
                 ? "Registration failed."
                 : $"Registered '{created.MacAddress}' successfully.";
 
-            _macAddress = string.Empty;
-            _deploymentLocation = string.Empty;
+            State.Registration.MacAddress = string.Empty;
+            State.Registration.DeploymentLocation = string.Empty;
             await RefreshSensorsAsync();
         }
         catch (Exception ex)
@@ -165,13 +162,13 @@
 
     private async Task OnFileSelectedAsync(InputFileChangeEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(_selectedSensorId))
+        if (string.IsNullOrWhiteSpace(State.Registration.SelectedSensorId))
         {
             _uploadMessage = "Choose a sensor first.";
             return;
         }
 
-        if (!Guid.TryParse(_selectedSensorId, out var sensorId))
+        if (!Guid.TryParse(State.Registration.SelectedSensorId, out var sensorId))
         {
             _uploadMessage = "Invalid sensor selection.";
             return;
