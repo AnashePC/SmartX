@@ -26,6 +26,14 @@ SmartX.sln
 | Advanced arrays | `SmartX.Shared/Models/TelemetryBatchBuffer.cs` | Jagged `double[][]` buffers uneven per-device sample counts before flattening into `List<TelemetryPacket<float>>`; `MeshTopologyGrid` is a true 2-D array for the future topology screen. |
 | Recursion | `SmartX.Shared/Models/DeploymentNode.cs` | `DeploymentValidator.Validate` recursively walks a Facility → Zone → Sub-Zone → Device tree, checking uniqueness, depth, and leaf-only device nodes. |
 
+> **Note:** the NuGet package versions pinned in the `.csproj` files (e.g.
+> `Microsoft.AspNetCore.OpenApi`, `Microsoft.AspNetCore.SignalR.Client`) were
+> written to match .NET 10, but this repo was authored without live access to
+> nuget.org to confirm exact published version numbers. If `dotnet restore`
+> reports a version that doesn't exist, run
+> `dotnet add package <PackageName>` inside the affected project to pick up
+> the latest compatible version automatically.
+
 ## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
