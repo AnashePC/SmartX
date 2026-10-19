@@ -1,0 +1,110 @@
+@inherits StateAwareComponent
+@inject SmartXApiClient Api
+
+<div class="form-card panel suggestions-panel">
+    <h2>🔮 Suggested Actions</h2>
+
+    @if (State.Suggestions is { } snapshot)
+    {
+        <p class="panel-note">@snapshot.ContextSummary</p>
+
+        @if (snapshot.Actions.Count == 0)
+        {
+            <p class="muted">Nothing to suggest right now. Suggestions appear on their own when an alert fires or you act.</p>
+        }
+        else
+        {
+            <ul class="suggestion-list">
+                @foreach (var action in snapshot.Actions)
+                {
+                    <li class="suggestion-item">
+                        <div class="suggestion-body">
+                            <strong>@action.Title</strong>
+                            <div class="suggestion-why">@action.Rationale</div>
+                            <div class="confidence-bar"><div class="confidence-fill" style="width:@((int)(action.Confidence * 100))%"></div></div>
+                        </div>
+                        <button class="mini-button mini-primary" @onclick="() => RunAsync(action)">
+                            @(action.Kind == SuggestionKind.Command ? "Run" : "Open")
+                        </button>
+                    </li>
+                }
+            </ul>
+        }
+
+        <h2 class="subhead">💡 Automated Insights</h2>
+        @if (snapshot.Insights.Count == 0)
+        {
+            <p class="muted">No devices need attention.</p>
+        }
+        else
+        {
+            <ul class="insight-list">
+                @foreach (var insight in snapshot.Insights)
+                {
+                    <li class="insight-item sev-@insight.Severity.ToString().ToLowerInvariant()"
+                        @onclick="() => FocusDevice(insight.DeviceId)">
+                        <strong>@insight.Title</strong>
+                        <div class="insight-detail">@insight.Detail</div>
+                    </li>
+                }
+            </ul>
+        }
+
+        <p class="panel-foot">Model: @snapshot.ObservedEvents events observed · @snapshot.LearnedTransitions learned transitions</p>
+    }
+    else
+    {
+        <p class="muted">Waiting for the prediction engine…</p>
+    }
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <p class="form-message">@_message</p>
+    }
+</div>
+
+@code {
+    private string _message = string.Empty;
+
+    private async Task RunAsync(SuggestedAction action)
+    {
+        _message = string.Empty;
+
+        try
+        {
+            switch (action.Kind)
+            {
+                case SuggestionKind.Command when action.Command is { } command:
+                    var result = await Api.IssueCommandAsync(command, action.DeviceId ?? string.Empty);
+                    _message = result.Success ? $"✅ {result.Message}" : $"⚠️ {result.Message}";
+                    break;
+
+                case SuggestionKind.OpenDevice when action.DeviceId is { } id:
+                    FocusDevice(id);
+                    if (State.Devices.TryGetValue(id, out var device))
+                    {
+                        // Following a suggestion is operator behaviour too — let the engine learn from it.
+                        await Api.RecordSearchAsync(device.Name);
+                    }
+                    break;
+
+                case SuggestionKind.Investigate:
+                    State.Ui.Search = action.Title.Replace("Search \"", string.Empty).TrimEnd('"');
+                    State.NotifyUiChanged();
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            _message = $"⚠️ {ex.Message}";
+        }
+    }
+
+    private void FocusDevice(string? deviceId)
+    {
+        if (string.IsNullOrEmpty(deviceId)) return;
+
+        State.Ui.SelectedDeviceId = deviceId;
+        State.NotifyUiChanged();
+    }
+}
