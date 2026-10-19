@@ -1,3 +1,5 @@
+@inherits StateAwareComponent
+
 <div class="nav-menu">
     <div class="nav-logo">⛛ Smart-X</div>
 
@@ -5,21 +7,30 @@
         🏠 Landing
     </NavLink>
 
-    <NavLink class="nav-link" href="sensors">
+    <div class="nav-section">Sensor Data Ingestion &amp; Telemetry</div>
+    <NavLink class="nav-link nav-sub" href="sensors">
         📡 Sensor Registration
     </NavLink>
-
-    <NavLink class="nav-link" href="dashboard">
+    <NavLink class="nav-link nav-sub" href="dashboard">
         📊 Telemetry Dashboard
     </NavLink>
 
-    <div class="nav-link nav-link-disabled" title="Part 2 of the PoE">
+    <div class="nav-section">Real-Time Command Stream</div>
+    <NavLink class="nav-link nav-sub" href="command-stream">
         🔁 Command Stream &amp; History
-        <span class="badge-soon">Part 2</span>
-    </div>
+        @if (AlertCount > 0)
+        {
+            <span class="badge-alert">@AlertCount</span>
+        }
+    </NavLink>
 
-    <div class="nav-link nav-link-disabled" title="Final PoE">
+    <div class="nav-section">Network Topology &amp; Mesh Routing</div>
+    <NavLink class="nav-link nav-sub" href="topology">
         🕸️ Network Topology
         <span class="badge-soon">Final PoE</span>
-    </div>
+    </NavLink>
 </div>
+
+@code {
+    private int AlertCount => State.Alerts.Count;
+}
