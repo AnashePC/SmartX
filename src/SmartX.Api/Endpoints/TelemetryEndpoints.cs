@@ -10,10 +10,20 @@ public static class TelemetryEndpoints
     {
         var group = app.MapGroup("/api/telemetry").WithTags("Telemetry");
 
-        group.MapPost("/", async (TelemetryIngestRequest request, ITelemetryStore store) =>
+        // Part 2: the endpoint no longer processes inline. It classifies the packet and places it in the
+        // standard FIFO queue or the priority queue, then answers 202 Accepted with the lane it landed in.
+        group.MapPost("/", (TelemetryIngestRequest request, ITelemetryPipeline pipeline) =>
         {
-            var feedItem = await store.IngestAsync(request);
-            return Results.Ok(feedItem);
+            var ack = pipeline.Enqueue(request);
+
+            if (ack.Accepted)
+            {
+                return Results.Accepted(value: ack);
+            }
+
+            return ack.Reason.StartsWith("Standard queue", StringComparison.Ordinal)
+                ? Results.Json(ack, statusCode: StatusCodes.Status429TooManyRequests)
+                : Results.BadRequest(ack);
         });
 
         group.MapGet("/feed", (int? count, ITelemetryStore store) =>

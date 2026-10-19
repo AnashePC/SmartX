@@ -18,7 +18,7 @@ public static class SensorEndpoints
             return sensor is null ? Results.NotFound() : Results.Ok(sensor);
         });
 
-        group.MapPost("/", (SensorRegistrationRequest request, ISensorRegistry registry) =>
+        group.MapPost("/", (SensorRegistrationRequest request, ISensorRegistry registry, IDeviceStateStore devices) =>
         {
             if (string.IsNullOrWhiteSpace(request.MacAddress))
             {
@@ -26,6 +26,11 @@ public static class SensorEndpoints
             }
 
             var registration = registry.Register(request.MacAddress, request.DeploymentLocation, request.Category);
+
+            // Part 2: a registered sensor also becomes an entry in the live device dictionary,
+            // keyed by MAC address, so telemetry from it resolves in O(1).
+            devices.RegisterSensor(registration);
+
             return Results.Created($"/api/sensors/{registration.Id}", registration);
         });
 
