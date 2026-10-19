@@ -1,0 +1,28 @@
+## .NET
+bin/
+obj/
+out/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Blazor / WASM
+wwwroot/uploads/*
+!wwwroot/uploads/.gitkeep
+
+## Rider / VS / VS Code
+.vs/
+.vscode/
+.idea/
+*.DotSettings.user
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Logs
+*.log
+
+## Docker
+docker-compose.override.yml
