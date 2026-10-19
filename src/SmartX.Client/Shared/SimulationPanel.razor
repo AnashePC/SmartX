@@ -1,0 +1,84 @@
+@inherits StateAwareComponent
+@inject SmartXApiClient Api
+
+<div class="form-card panel">
+    <h2>🧪 Simulation Tools</h2>
+    <p class="panel-note">Each button sends packets to the API exactly as a real device would, so the queues, priority lane and alert set are exercised for real.</p>
+
+    <div class="button-row">
+        <button class="cta-button cta-danger" @onclick='() => CriticalAsync("power", "ESP32-02")'>⚡ Critical power spike</button>
+        <button class="cta-button cta-danger" @onclick='() => CriticalAsync("moisture-low", "ESP32-04")'>🏜️ Critical moisture drop</button>
+        <button class="cta-button cta-secondary" @onclick="BurstAsync">📦 Burst 300 + 1 critical</button>
+    </div>
+
+    <label>Disconnect / reconnect a simulated node</label>
+    <div class="inline-row">
+        <select @bind="_disconnectTarget">
+            <option value="">-- choose a node --</option>
+            @foreach (var device in State.Devices.Values.OrderBy(d => d.Name))
+            {
+                <option value="@device.DeviceId">@device.Name (@device.Status)</option>
+            }
+        </select>
+        <button class="cta-button cta-secondary" disabled="@string.IsNullOrEmpty(_disconnectTarget)"
+                @onclick="ToggleDisconnectAsync">Toggle</button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <p class="form-message">@_message</p>
+    }
+</div>
+
+@code {
+    private string _disconnectTarget = string.Empty;
+    private string _message = string.Empty;
+
+    private async Task CriticalAsync(string kind, string deviceId)
+    {
+        try
+        {
+            var ack = await Api.SimulateCriticalAsync(kind, deviceId);
+            _message = ack is null
+                ? "No response."
+                : $"Sent to the {(ack.Lane == AlertPriority.Critical ? "PRIORITY" : "standard")} lane (packet #{ack.Sequence}).";
+        }
+        catch (Exception ex)
+        {
+            _message = $"⚠️ {ex.Message}";
+        }
+    }
+
+    private async Task BurstAsync()
+    {
+        try
+        {
+            var result = await Api.SimulateBurstAsync(300);
+            _message = result is null
+                ? "No response."
+                : $"Queued {result.RoutinePacketsQueued} routine packets, then critical packet #{result.CriticalPacketSequence}. " +
+                  "Watch the Live Stream: the critical one is processed first.";
+        }
+        catch (Exception ex)
+        {
+            _message = $"⚠️ {ex.Message}";
+        }
+    }
+
+    private async Task ToggleDisconnectAsync()
+    {
+        try
+        {
+            var result = await Api.ToggleDisconnectAsync(_disconnectTarget);
+            _message = result is null
+                ? "No response."
+                : result.Silent
+                    ? $"{result.DeviceId} is now silent. A Disconnected alert appears after about 15 seconds."
+                    : $"{result.DeviceId} is transmitting again.";
+        }
+        catch (Exception ex)
+        {
+            _message = $"⚠️ {ex.Message}";
+        }
+    }
+}
