@@ -52,11 +52,29 @@ public sealed class SmartXApiClient
         return await response.Content.ReadFromJsonAsync<ValidationResult>();
     }
 
-    public async Task<object?> SeedBatchAsync(int devices, int samplesPerDevice)
+    public async Task<BatchSeedResult?> SeedBatchAsync(int devices, int samplesPerDevice)
     {
         var response = await _http.PostAsync(
             $"/api/telemetry/seed-batch?devices={devices}&samplesPerDevice={samplesPerDevice}", content: null);
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<object>();
+        return await response.Content.ReadFromJsonAsync<BatchSeedResult>();
+    }
+
+    public async Task<AggregateResult?> GetAggregateAsync(string sensorIdA, string sensorIdB)
+    {
+        var response = await _http.GetAsync($"/api/telemetry/aggregate?a={Uri.EscapeDataString(sensorIdA)}&b={Uri.EscapeDataString(sensorIdB)}");
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorText = await response.Content.ReadAsStringAsync();
+            throw new InvalidOperationException(errorText);
+        }
+
+        return await response.Content.ReadFromJsonAsync<AggregateResult>();
     }
 }
+
+/// <summary>Mirrors the anonymous JSON shape returned by GET /api/telemetry/aggregate.</summary>
+public sealed record AggregateResult(string SensorId, double Value, string Unit, DateTime TimestampUtc);
+
+/// <summary>Mirrors the anonymous JSON shape returned by POST /api/telemetry/seed-batch.</summary>
+public sealed record BatchSeedResult(int[] RowLengths, int PacketCount, List<string> Sample);
