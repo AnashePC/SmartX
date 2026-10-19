@@ -1,0 +1,85 @@
+<div class="device-card status-@StatusClass @(Selected ? "selected" : "") @(Insight is not null ? "has-insight" : "")"
+     @onclick="() => OnSelect.InvokeAsync(Device.DeviceId)">
+
+    <div class="device-head">
+        <span class="device-icon">@Icon</span>
+        <div class="device-title">
+            <strong>@Device.Name</strong>
+            <small>@Device.DeviceId</small>
+        </div>
+        <span class="status-pill pill-@StatusClass">@StatusText</span>
+    </div>
+
+    <div class="device-value">@ValueText</div>
+    <div class="device-loc">@Device.Location</div>
+
+    @if (Device.ActiveAlerts.Count > 0)
+    {
+        <div class="chip-row">
+            @foreach (var alert in Device.ActiveAlerts)
+            {
+                <span class="chip chip-danger">@alert</span>
+            }
+        </div>
+    }
+
+    @if (Insight is not null)
+    {
+        <div class="device-insight sev-@Insight.Severity.ToString().ToLowerInvariant()">💡 @Insight.Title</div>
+    }
+
+    @if (Device.Category == SensorCategory.Actuator)
+    {
+        <div class="device-actions" @onclick:stopPropagation="true">
+            <button class="mini-button" disabled="@(Device.Status == DeviceStatus.Disconnected)"
+                    @onclick="() => Send(CommandAction.TurnOn)">ON</button>
+            <button class="mini-button" disabled="@(Device.Status == DeviceStatus.Disconnected)"
+                    @onclick="() => Send(CommandAction.TurnOff)">OFF</button>
+            <button class="mini-button" disabled="@(Device.Status == DeviceStatus.Disconnected)"
+                    @onclick="() => Send(CommandAction.Toggle)">Toggle</button>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public DeviceState Device { get; set; } = default!;
+    [Parameter] public bool Selected { get; set; }
+    [Parameter] public AutomatedInsight? Insight { get; set; }
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+    [Parameter] public EventCallback<IssueCommandRequest> OnCommand { get; set; }
+
+    private string StatusClass => Device.Status.ToString().ToLowerInvariant();
+
+    private string StatusText => Device.Status switch
+    {
+        DeviceStatus.AwaitingData => "Awaiting data",
+        DeviceStatus.Online => "Online",
+        DeviceStatus.Alert => "ALERT",
+        _ => "Disconnected"
+    };
+
+    private string Icon => Device.Category switch
+    {
+        SensorCategory.Environmental => "🌱",
+        SensorCategory.PowerConsumption => "⚡",
+        _ => "🎛️"
+    };
+
+    private string ValueText
+    {
+        get
+        {
+            if (Device.Category == SensorCategory.Actuator)
+            {
+                return Device.ActuatorOn is null ? "—" : Device.ActuatorOn.Value ? "ON" : "OFF";
+            }
+
+            return Device.LastNumericValue is { } value
+                ? $"{value.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)} {Device.Unit}".Trim()
+                : "—";
+        }
+    }
+
+    private Task Send(CommandAction action) =>
+        OnCommand.InvokeAsync(new IssueCommandRequest { Action = action, DeviceId = Device.DeviceId });
+}
