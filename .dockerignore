@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+**/node_modules/
+.git/
+.vs/
+.vscode/
+.idea/
+*.md
+docs/
+src/SmartX.Api/wwwroot/uploads/*
+!src/SmartX.Api/wwwroot/uploads/.gitkeep
