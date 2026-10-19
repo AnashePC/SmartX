@@ -1,0 +1,39 @@
+@page "/"
+
+<PageTitle>Smart-X Gateway Console</PageTitle>
+
+<h1>Smart-X IoT Mesh Ecosystem</h1>
+<p class="subtitle">
+    Hybrid IoT gateway for hydroponic farms, utility trackers, and smart grid installations.
+    Choose a pillar to begin.
+</p>
+
+<div class="pillar-grid">
+    <a href="/sensors" class="pillar-card pillar-active">
+        <div class="pillar-icon">📡</div>
+        <h2>Sensor Data Ingestion &amp; Telemetry</h2>
+        <p>Register devices, attach configuration files or photos, and stream live telemetry into the gateway.</p>
+        <span class="pillar-status status-active">Available — Part 1</span>
+    </a>
+
+    <div class="pillar-card pillar-disabled">
+        <div class="pillar-icon">🔁</div>
+        <h2>Real-Time Command Stream &amp; History</h2>
+        <p>Send commands back down to devices and browse full telemetry history.</p>
+        <span class="pillar-status status-disabled">Coming in Part 2</span>
+    </div>
+
+    <div class="pillar-card pillar-disabled">
+        <div class="pillar-icon">🕸️</div>
+        <h2>Network Topology &amp; Mesh Routing</h2>
+        <p>Visualise how devices are physically distributed across zones and facilities.</p>
+        <span class="pillar-status status-disabled">Coming in the final PoE</span>
+    </div>
+</div>
+
+<div class="pillar-card pillar-active" style="margin-top:1.5rem;">
+    <div class="pillar-icon">📊</div>
+    <h2>Telemetry Dashboard</h2>
+    <p>Watch live readings arrive in real time, and see the Anomaly Heartbeat engagement widget react to spikes and drop-offs.</p>
+    <a href="/dashboard" class="cta-button">Open Dashboard →</a>
+</div>
