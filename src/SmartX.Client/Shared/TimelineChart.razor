@@ -1,0 +1,111 @@
+@using System.Globalization
+
+<div class="chart-box">
+    <div class="chart-title">@Title</div>
+
+    @if (Points.Count < 2)
+    {
+        <p class="muted">Waiting for enough readings to draw a timeline…</p>
+    }
+    else
+    {
+        <svg viewBox="0 0 @Width @Height" class="timeline-svg" preserveAspectRatio="none">
+            @foreach (var line in Guides)
+            {
+                <line x1="@PadLeft" x2="@(Width - PadRight)" y1="@Fmt(line.Y)" y2="@Fmt(line.Y)" class="guide-line @line.CssClass" />
+            }
+
+            <polyline class="timeline-line" points="@PolylinePoints" />
+
+            @foreach (var dot in AnomalyDots)
+            {
+                <circle cx="@Fmt(dot.X)" cy="@Fmt(dot.Y)" r="4" class="timeline-anomaly" />
+            }
+
+            @* Razor reserves the <text> tag name, so SVG labels are emitted as prepared markup. *@
+            @((MarkupString)LabelsMarkup)
+        </svg>
+
+        <div class="chart-axis">
+            <span>@Points[0].TimestampUtc.ToString("HH:mm:ss")</span>
+            <span>@Points.Count points · red = anomaly</span>
+            <span>@Points[^1].TimestampUtc.ToString("HH:mm:ss")</span>
+        </div>
+    }
+</div>
+
+@code {
+    private const double Width = 600;
+    private const double Height = 190;
+    private const double PadLeft = 34;
+    private const double PadRight = 8;
+    private const double PadTop = 12;
+    private const double PadBottom = 12;
+
+    private sealed record Guide(double Y, string Label, string CssClass);
+
+    private double _min;
+    private double _max;
+    private string PolylinePoints = string.Empty;
+    private List<(double X, double Y)> AnomalyDots = new();
+    private List<Guide> Guides = new();
+    private string LabelsMarkup = string.Empty;
+
+    [Parameter] public string Title { get; set; } = "Timeline";
+    [Parameter] public IReadOnlyList<TimelinePoint> Points { get; set; } = Array.Empty<TimelinePoint>();
+
+    /// <summary>Optional threshold lines drawn as dashed guides (e.g. the 20% critical-low limit).</summary>
+    [Parameter] public double? CriticalLow { get; set; }
+    [Parameter] public double? CriticalHigh { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        if (Points.Count < 2)
+        {
+            return;
+        }
+
+        var values = Points.Select(p => p.Value).ToList();
+        if (CriticalLow is { } low) values.Add(low);
+        if (CriticalHigh is { } high) values.Add(high);
+
+        _min = values.Min();
+        _max = values.Max();
+        if (Math.Abs(_max - _min) < 0.001)
+        {
+            _min -= 1;
+            _max += 1;
+        }
+
+        var pad = (_max - _min) * 0.08;
+        _min -= pad;
+        _max += pad;
+
+        var plotWidth = Width - PadLeft - PadRight;
+        var plotHeight = Height - PadTop - PadBottom;
+
+        double X(int i) => PadLeft + plotWidth * i / (Points.Count - 1);
+        double Y(double v) => PadTop + plotHeight * (1 - (v - _min) / (_max - _min));
+
+        PolylinePoints = string.Join(' ', Points.Select((p, i) => $"{Fmt(X(i))},{Fmt(Y(p.Value))}"));
+        AnomalyDots = Points.Select((p, i) => (p, i)).Where(t => t.p.IsAnomaly).Select(t => (X(t.i), Y(t.p.Value))).ToList();
+
+        Guides = new List<Guide>();
+        if (CriticalLow is { } l) Guides.Add(new Guide(Y(l), $"critical low {Fmt(l)}", "guide-low"));
+        if (CriticalHigh is { } h) Guides.Add(new Guide(Y(h), $"critical high {Fmt(h)}", "guide-high"));
+
+        // Labels contain only numbers and fixed words, so building them as markup is safe.
+        var labels = new System.Text.StringBuilder();
+        foreach (var guide in Guides)
+        {
+            labels.Append($"<text x=\"{Fmt(Width - PadRight)}\" y=\"{Fmt(guide.Y - 3)}\" class=\"guide-label\" text-anchor=\"end\">{guide.Label}</text>");
+        }
+
+        labels.Append($"<text x=\"4\" y=\"{Fmt(PadTop + 4)}\" class=\"axis-label\">{Fmt(_max)}</text>");
+        labels.Append($"<text x=\"4\" y=\"{Fmt(Height - PadBottom)}\" class=\"axis-label\">{Fmt(_min)}</text>");
+        LabelsMarkup = labels.ToString();
+    }
+
+    // Invariant culture: SVG needs '.' as the decimal separator regardless of the browser's locale.
+    private static string Fmt(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+}
