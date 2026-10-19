@@ -1,0 +1,259 @@
+@page "/dashboard"
+@inject SmartXApiClient Api
+@inject TelemetryHubClient Hub
+@implements IAsyncDisposable
+
+<PageTitle>Telemetry Dashboard — Smart-X</PageTitle>
+
+<h1>Telemetry Dashboard</h1>
+<p class="subtitle">Live feed of every ingested reading, pushed over SignalR the instant the gateway processes it.</p>
+
+<div class="dashboard-grid">
+
+    <!-- ============ Engagement feature: Anomaly Heartbeat ============ -->
+    <div class="heartbeat-card @(_lastWasAnomaly ? "heartbeat-alert" : "heartbeat-calm")">
+        <h2>Anomaly Heartbeat</h2>
+        <p class="heartbeat-caption">
+            @if (_lastWasAnomaly)
+            {
+                <span>⚠️ Spike detected on <strong>@_lastSensorId</strong></span>
+            }
+            else
+            {
+                <span>All sensors nominal</span>
+            }
+        </p>
+
+        <svg viewBox="0 0 300 80" class="heartbeat-svg" preserveAspectRatio="none">
+            <polyline class="heartbeat-line" points="0,40 40,40 55,10 70,70 85,40 130,40 145,15 160,65 175,40 300,40" />
+        </svg>
+
+        <div class="streak-row">
+            <div class="streak-count">
+                <span class="streak-number">@_anomalyFreeStreak</span>
+                <span class="streak-label">readings anomaly-free</span>
+            </div>
+            <div class="badge-row">
+                @foreach (var badge in _earnedBadges)
+                {
+                    <span class="badge-pill">@badge</span>
+                }
+            </div>
+        </div>
+
+        @if (_toastMessage is not null)
+        {
+            <div class="toast">🏅 @_toastMessage</div>
+        }
+    </div>
+
+    <!-- ============ Manual ingestion + operator-overload demos ============ -->
+    <div class="form-card">
+        <h2>Manual Test Reading</h2>
+        <label>Sensor ID</label>
+        <input @bind="_manualSensorId" placeholder="ESP32-01" />
+
+        <label>Kind</label>
+        <select @bind="_manualKind">
+            <option value="@TelemetryValueKind.Float">Float (environmental)</option>
+            <option value="@TelemetryValueKind.Integer">Integer (power, Watts)</option>
+            <option value="@TelemetryValueKind.Boolean">Boolean (actuator)</option>
+        </select>
+
+        @if (_manualKind == TelemetryValueKind.Boolean)
+        {
+            <label><input type="checkbox" @bind="_manualBool" /> Value (ON/OFF)</label>
+        }
+        else
+        {
+            <label>Value</label>
+            <input type="number" @bind="_manualNumeric" />
+        }
+
+        <button class="cta-button" @onclick="SendManualReadingAsync">Send Reading</button>
+
+        <hr />
+
+        <h3>Aggregate Two Meters (operator overload demo)</h3>
+        <input @bind="_aggregateA" placeholder="Sensor A id" />
+        <input @bind="_aggregateB" placeholder="Sensor B id" />
+        <button class="cta-button" @onclick="RunAggregateAsync">Meter3 = A + B</button>
+        @if (!string.IsNullOrEmpty(_aggregateMessage))
+        {
+            <p class="form-message">@_aggregateMessage</p>
+        }
+
+        <hr />
+
+        <h3>Seed Jagged Batch (array demo)</h3>
+        <button class="cta-button" @onclick="SeedBatchAsync">Seed 4 Devices</button>
+        @if (_lastBatchResult is not null)
+        {
+            <p class="form-message">
+                Row lengths: [@string.Join(", ", _lastBatchResult.RowLengths)] — flattened to @_lastBatchResult.PacketCount packets.
+            </p>
+        }
+    </div>
+
+    <!-- ============ Live feed ============ -->
+    <div class="form-card feed-card">
+        <h2>Live Feed</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Time (UTC)</th>
+                    <th>Sensor</th>
+                    <th>Value</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in _feed)
+                {
+                    <tr class="@(item.IsAnomaly ? "row-anomaly" : "")">
+                        <td>@item.TimestampUtc.ToString("HH:mm:ss")</td>
+                        <td>@item.SensorId</td>
+                        <td>@item.DisplayValue</td>
+                        <td>@(item.IsAnomaly ? "⚠️" : "")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    private const int FeedDisplayLimit = 30;
+    private static readonly int[] BadgeMilestones = { 10, 25, 50, 100 };
+
+    private List<TelemetryFeedItem> _feed = new();
+    private bool _lastWasAnomaly;
+    private string _lastSensorId = string.Empty;
+
+    private int _anomalyFreeStreak;
+    private readonly List<string> _earnedBadges = new();
+    private readonly HashSet<int> _awardedMilestones = new();
+    private string? _toastMessage;
+
+    private string _manualSensorId = "ESP32-01";
+    private TelemetryValueKind _manualKind = TelemetryValueKind.Float;
+    private double _manualNumeric = 42;
+    private bool _manualBool;
+
+    private string _aggregateA = string.Empty;
+    private string _aggregateB = string.Empty;
+    private string _aggregateMessage = string.Empty;
+
+    private BatchSeedResult? _lastBatchResult;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _feed = await Api.GetFeedAsync(FeedDisplayLimit);
+
+        Hub.OnTelemetryReceived += HandleIncomingTelemetry;
+        await Hub.StartAsync();
+    }
+
+    private void HandleIncomingTelemetry(TelemetryFeedItem item)
+    {
+        _lastWasAnomaly = item.IsAnomaly;
+        _lastSensorId = item.SensorId;
+
+        if (item.IsAnomaly)
+        {
+            _anomalyFreeStreak = 0;
+        }
+        else
+        {
+            _anomalyFreeStreak++;
+            CheckForNewBadge();
+        }
+
+        _feed.Insert(0, item);
+        if (_feed.Count > FeedDisplayLimit)
+        {
+            _feed.RemoveAt(_feed.Count - 1);
+        }
+
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void CheckForNewBadge()
+    {
+        foreach (var milestone in BadgeMilestones)
+        {
+            if (_anomalyFreeStreak == milestone && _awardedMilestones.Add(milestone))
+            {
+                var badgeName = milestone switch
+                {
+                    10 => "🥉 Bronze Streak",
+                    25 => "🥈 Silver Streak",
+                    50 => "🥇 Gold Streak",
+                    _ => "💎 Platinum Streak"
+                };
+
+                _earnedBadges.Add(badgeName);
+                _toastMessage = $"{badgeName} — {milestone} readings anomaly-free!";
+
+                _ = ClearToastAfterDelay();
+            }
+        }
+    }
+
+    private async Task ClearToastAfterDelay()
+    {
+        await Task.Delay(4000);
+        _toastMessage = null;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SendManualReadingAsync()
+    {
+        var request = new TelemetryIngestRequest
+        {
+            SensorId = _manualSensorId,
+            Kind = _manualKind,
+            NumericValue = _manualNumeric,
+            BooleanValue = _manualBool,
+            Unit = _manualKind switch
+            {
+                TelemetryValueKind.Float => "% moisture",
+                TelemetryValueKind.Integer => "W",
+                _ => ""
+            }
+        };
+
+        await Api.IngestTelemetryAsync(request);
+        // The SignalR push will update the UI; no need to touch _feed here directly.
+    }
+
+    private async Task RunAggregateAsync()
+    {
+        try
+        {
+            var result = await Api.GetAggregateAsync(_aggregateA, _aggregateB);
+            _aggregateMessage = result is null
+                ? "No result returned."
+                : $"{result.SensorId} = {result.Value:F2}{result.Unit}";
+        }
+        catch (Exception ex)
+        {
+            _aggregateMessage = $"Error: {ex.Message}";
+        }
+    }
+
+    private async Task SeedBatchAsync()
+    {
+        _lastBatchResult = await Api.SeedBatchAsync(devices: 4, samplesPerDevice: 5);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        // TelemetryHubClient is a scoped-as-singleton service in Blazor WASM (one
+        // DI root for the whole app), so only detach this page's handler here —
+        // disposing the underlying HubConnection would break it for the next
+        // time the user navigates back to this page.
+        Hub.OnTelemetryReceived -= HandleIncomingTelemetry;
+        return ValueTask.CompletedTask;
+    }
+}
