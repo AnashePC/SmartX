@@ -24,6 +24,17 @@ public sealed class TelemetryFeedItem
     public string DisplayValue { get; set; } = string.Empty;
     public DateTime TimestampUtc { get; set; }
     public bool IsAnomaly { get; set; }
+
+    // ---- Part 2 additions (all optional, so Part 1 consumers keep working) ----
+
+    /// <summary>Friendly device name, e.g. "Pump A".</summary>
+    public string DeviceName { get; set; } = string.Empty;
+
+    /// <summary>Which pipeline lane processed this packet.</summary>
+    public AlertPriority Lane { get; set; }
+
+    /// <summary>How long the packet waited in its queue before processing.</summary>
+    public int QueueWaitMs { get; set; }
 }
 
 /// <summary>What the client posts to /api/sensors to register a new device.</summary>
