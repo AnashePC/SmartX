@@ -1,0 +1,41 @@
+@inherits StateAwareComponent
+
+@if (State.Stats is { } s)
+{
+    <div class="stats-bar">
+        <div class="stat-tile">
+            <span class="stat-label">Standard queue (FIFO)</span>
+            <span class="stat-value">@s.StandardQueueDepth</span>
+            <span class="stat-sub">@s.StandardProcessed processed · avg wait @s.AverageStandardWaitMs ms</span>
+        </div>
+        <div class="stat-tile stat-priority">
+            <span class="stat-label">Priority queue (critical)</span>
+            <span class="stat-value">@s.PriorityQueueDepth</span>
+            <span class="stat-sub">@s.PriorityProcessed processed · avg wait @s.AveragePriorityWaitMs ms</span>
+        </div>
+        <div class="stat-tile">
+            <span class="stat-label">Active alerts</span>
+            <span class="stat-value">@s.ActiveAlertCount</span>
+            <span class="stat-sub">@s.DisconnectedDeviceCount disconnected</span>
+        </div>
+        <div class="stat-tile">
+            <span class="stat-label">Duplicates suppressed</span>
+            <span class="stat-value">@s.DuplicateAlertsSuppressed</span>
+            <span class="stat-sub">by the alert HashSet</span>
+        </div>
+        <div class="stat-tile">
+            <span class="stat-label">Devices tracked</span>
+            <span class="stat-value">@s.DeviceCount</span>
+            <span class="stat-sub">@s.TotalProcessed packets processed</span>
+        </div>
+        <div class="stat-tile">
+            <span class="stat-label">Undo stack</span>
+            <span class="stat-value">@s.UndoDepth</span>
+            <span class="stat-sub">commands revertible</span>
+        </div>
+    </div>
+}
+else
+{
+    <div class="stats-bar"><p class="muted">Waiting for the gateway to report statistics…</p></div>
+}
