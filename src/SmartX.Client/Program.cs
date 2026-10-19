@@ -18,4 +18,7 @@ builder.Services.AddSingleton(new ApiOptions(apiBaseUrl));
 builder.Services.AddScoped<SmartXApiClient>();
 builder.Services.AddScoped<TelemetryHubClient>();
 
+// One GatewayState for the whole app: owns the SignalR subscription and every page's live data + UI state.
+builder.Services.AddScoped<GatewayState>();
+
 await builder.Build().RunAsync();
