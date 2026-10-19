@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  smartx-api:
+    build:
+      context: .
+      dockerfile: src/SmartX.Api/Dockerfile
+    container_name: smartx-api
+    ports:
+      - "8080:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+    volumes:
+      - smartx-uploads:/app/wwwroot/uploads
+
+  smartx-client:
+    build:
+      context: .
+      dockerfile: src/SmartX.Client/Dockerfile
+    container_name: smartx-client
+    ports:
+      - "8081:80"
+    depends_on:
+      - smartx-api
+
+volumes:
+  smartx-uploads:
