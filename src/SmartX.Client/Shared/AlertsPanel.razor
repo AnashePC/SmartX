@@ -1,0 +1,58 @@
+@inherits StateAwareComponent
+
+<div class="form-card panel">
+    <h2>Active Alerts <span class="count-pill">@State.Alerts.Count</span></h2>
+    <p class="panel-note">One entry per unique alert — repeats of an alert that is already active are suppressed by the HashSet.</p>
+
+    @if (State.Alerts.Count == 0)
+    {
+        <p class="muted">✅ No active alerts. All nodes nominal.</p>
+    }
+    else
+    {
+        <ul class="alert-list">
+            @foreach (var alert in State.Alerts)
+            {
+                <li class="alert-item alert-@alert.Kind.ToString().ToLowerInvariant()" @onclick="() => Select(alert.DeviceId)">
+                    <span class="alert-icon">@IconFor(alert.Kind)</span>
+                    <div>
+                        <strong>@alert.DeviceName</strong>
+                        <span class="alert-kind">@LabelFor(alert.Kind)</span>
+                        <div class="alert-message">@alert.Message</div>
+                    </div>
+                    <span class="alert-age">@Age(alert.RaisedUtc)</span>
+                </li>
+            }
+        </ul>
+    }
+</div>
+
+@code {
+    private void Select(string deviceId)
+    {
+        State.Ui.SelectedDeviceId = deviceId;
+        State.NotifyUiChanged();
+    }
+
+    private static string IconFor(AlertKind kind) => kind switch
+    {
+        AlertKind.PowerSpike => "⚡",
+        AlertKind.MoistureCriticalLow => "🏜️",
+        AlertKind.MoistureCriticalHigh => "🌊",
+        _ => "📵"
+    };
+
+    private static string LabelFor(AlertKind kind) => kind switch
+    {
+        AlertKind.PowerSpike => "Power spike",
+        AlertKind.MoistureCriticalLow => "Moisture critically low",
+        AlertKind.MoistureCriticalHigh => "Moisture critically high",
+        _ => "Disconnected"
+    };
+
+    private static string Age(DateTime raisedUtc)
+    {
+        var seconds = Math.Max(0, (int)(DateTime.UtcNow - raisedUtc).TotalSeconds);
+        return seconds < 60 ? $"{seconds}s ago" : $"{seconds / 60}m ago";
+    }
+}
