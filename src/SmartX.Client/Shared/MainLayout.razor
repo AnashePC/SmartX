@@ -1,14 +1,66 @@
 @inherits LayoutComponentBase
+@implements IDisposable
+@inject GatewayState State
 
 <div class="app-shell">
     <NavMenu />
     <main class="app-main">
         <div class="top-bar">
             <span class="brand">Smart-X Gateway Console</span>
-            <span class="env-tag">Simulation Environment</span>
+            <div class="top-bar-right">
+                <span class="conn-pill conn-@State.Connection.ToString().ToLowerInvariant()">@ConnectionText</span>
+                <span class="env-tag">Simulation Environment</span>
+            </div>
         </div>
+
+        @if (State.Connection is ConnectionStatus.Offline or ConnectionStatus.Reconnecting)
+        {
+            <div class="offline-banner">
+                ⚠️ The gateway API is not reachable right now. The console keeps your place and will reconnect automatically.
+            </div>
+        }
+
         <article class="content">
-            @Body
+            @* A fault inside one page can't blank the whole console, and leaving the page clears the error. *@
+            <ErrorBoundary @ref="_boundary">
+                <ChildContent>@Body</ChildContent>
+                <ErrorContent Context="exception">
+                    <div class="form-card error-card">
+                        <h2>Something went wrong on this page</h2>
+                        <p>@exception.Message</p>
+                        <p class="muted">The rest of the console is unaffected. Your data and filters are preserved.</p>
+                        <button class="cta-button" @onclick="() => _boundary?.Recover()">Try again</button>
+                    </div>
+                </ErrorContent>
+            </ErrorBoundary>
         </article>
     </main>
 </div>
+
+@code {
+    private ErrorBoundary? _boundary;
+
+    private string ConnectionText => State.Connection switch
+    {
+        ConnectionStatus.Connected => "● Live",
+        ConnectionStatus.Connecting => "◌ Connecting…",
+        ConnectionStatus.Reconnecting => "◌ Reconnecting…",
+        _ => "○ Offline"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        State.Changed += HandleStateChanged;
+        await State.EnsureStartedAsync();
+    }
+
+    protected override void OnParametersSet()
+    {
+        // A new page was navigated to: clear any error left over from the previous one.
+        _boundary?.Recover();
+    }
+
+    private void HandleStateChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => State.Changed -= HandleStateChanged;
+}
