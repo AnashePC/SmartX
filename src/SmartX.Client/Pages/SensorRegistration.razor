@@ -1,0 +1,213 @@
+@page "/sensors"
+@inject SmartXApiClient Api
+
+<PageTitle>Sensor Registration — Smart-X</PageTitle>
+
+<h1>Sensor Registration</h1>
+<p class="subtitle">Register a device, attach its configuration file or deployment photo, and confirm its place in the deployment hierarchy.</p>
+
+<div class="form-card">
+    <h2>New Sensor Profile</h2>
+
+    <label>Device MAC Address / Unique Identifier</label>
+    <input @bind="_macAddress" placeholder="AA:BB:CC:DD:EE:FF" />
+
+    <label>Sensor Deployment Location</label>
+    <input @bind="_deploymentLocation" placeholder="Sub-Zone B -> Zone 1 -> Facility A" />
+
+    <label>Sensor Category</label>
+    <select @bind="_category">
+        @foreach (var category in Enum.GetValues<SensorCategory>())
+        {
+            <option value="@category">@category</option>
+        }
+    </select>
+
+    <button class="cta-button" @onclick="RegisterSensorAsync" disabled="@_isRegistering">
+        @(_isRegistering ? "Registering…" : "Register Sensor")
+    </button>
+
+    @if (!string.IsNullOrEmpty(_registerMessage))
+    {
+        <p class="form-message">@_registerMessage</p>
+    }
+</div>
+
+<div class="form-card">
+    <h2>Attach Media / Config / Log File</h2>
+    <p>Select a registered sensor above, then attach a config file, deployment photo, or hardware log.</p>
+
+    <select @bind="_selectedSensorId">
+        <option value="">-- choose a sensor --</option>
+        @foreach (var sensor in _sensors)
+        {
+            <option value="@sensor.Id">@sensor.MacAddress (@sensor.Category)</option>
+        }
+    </select>
+
+    <InputFile OnChange="OnFileSelectedAsync" />
+
+    @if (!string.IsNullOrEmpty(_uploadMessage))
+    {
+        <p class="form-message">@_uploadMessage</p>
+    }
+</div>
+
+<div class="form-card">
+    <h2>Recursive Deployment Validation</h2>
+    <p>Fetches a sample Facility → Zone → Sub-Zone → Device tree from the API and validates it recursively, catching duplicate IDs, missing IDs, over-nested branches, or devices that incorrectly carry children.</p>
+
+    <button class="cta-button" @onclick="ValidateSampleTreeAsync">Validate Sample Tree</button>
+
+    @if (_validationResult is not null)
+    {
+        <div class="validation-result @(_validationResult.IsValid ? "valid" : "invalid")">
+            <strong>@(_validationResult.IsValid ? "✅ Tree is valid." : "⚠️ Issues found:")</strong>
+            <ul>
+                @foreach (var error in _validationResult.Errors)
+                {
+                    <li>@error</li>
+                }
+            </ul>
+        </div>
+    }
+</div>
+
+<div class="form-card">
+    <h2>Registered Sensors (@_sensors.Count)</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>MAC / ID</th>
+                <th>Location</th>
+                <th>Category</th>
+                <th>Attached Files</th>
+                <th>Registered (UTC)</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var sensor in _sensors)
+            {
+                <tr>
+                    <td>@sensor.MacAddress</td>
+                    <td>@sensor.DeploymentLocation</td>
+                    <td>@sensor.Category</td>
+                    <td>@(sensor.AttachedFileNames.Count == 0 ? "—" : string.Join(", ", sensor.AttachedFileNames))</td>
+                    <td>@sensor.RegisteredUtc.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private string _macAddress = string.Empty;
+    private string _deploymentLocation = string.Empty;
+    private SensorCategory _category = SensorCategory.Environmental;
+    private bool _isRegistering;
+    private string _registerMessage = string.Empty;
+
+    private string _selectedSensorId = string.Empty;
+    private string _uploadMessage = string.Empty;
+
+    private ValidationResult? _validationResult;
+
+    private List<SensorRegistration> _sensors = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshSensorsAsync();
+    }
+
+    private async Task RefreshSensorsAsync()
+    {
+        _sensors = await Api.GetSensorsAsync();
+    }
+
+    private async Task RegisterSensorAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_macAddress))
+        {
+            _registerMessage = "A MAC address / unique identifier is required.";
+            return;
+        }
+
+        _isRegistering = true;
+        _registerMessage = string.Empty;
+
+        try
+        {
+            var request = new SensorRegistrationRequest
+            {
+                MacAddress = _macAddress,
+                DeploymentLocation = _deploymentLocation,
+                Category = _category
+            };
+
+            var created = await Api.RegisterSensorAsync(request);
+            _registerMessage = created is null
+                ? "Registration failed."
+                : $"Registered '{created.MacAddress}' successfully.";
+
+            _macAddress = string.Empty;
+            _deploymentLocation = string.Empty;
+            await RefreshSensorsAsync();
+        }
+        catch (Exception ex)
+        {
+            _registerMessage = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            _isRegistering = false;
+        }
+    }
+
+    private async Task OnFileSelectedAsync(InputFileChangeEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_selectedSensorId))
+        {
+            _uploadMessage = "Choose a sensor first.";
+            return;
+        }
+
+        if (!Guid.TryParse(_selectedSensorId, out var sensorId))
+        {
+            _uploadMessage = "Invalid sensor selection.";
+            return;
+        }
+
+        try
+        {
+            const long maxFileSizeBytes = 10 * 1024 * 1024; // 10 MB cap for config/photo/log uploads
+            var file = e.File;
+
+            await using var stream = file.OpenReadStream(maxFileSizeBytes);
+            using var content = new MultipartFormDataContent();
+            using var fileContent = new StreamContent(stream);
+            content.Add(fileContent, "file", file.Name);
+
+            var success = await Api.UploadFileAsync(sensorId, content);
+            _uploadMessage = success
+                ? $"Uploaded '{file.Name}' successfully."
+                : "Upload failed.";
+
+            await RefreshSensorsAsync();
+        }
+        catch (Exception ex)
+        {
+            _uploadMessage = $"Error: {ex.Message}";
+        }
+    }
+
+    private async Task ValidateSampleTreeAsync()
+    {
+        var sample = await Api.GetSampleDeploymentAsync();
+        if (sample is null)
+        {
+            return;
+        }
+
+        _validationResult = await Api.ValidateDeploymentAsync(sample);
+    }
+}
