@@ -1,0 +1,113 @@
+@inherits StateAwareComponent
+@inject SmartXApiClient Api
+
+<div class="form-card panel">
+    <h2>Manual Override</h2>
+    <p class="panel-note">Send a command to an actuator. Every command goes on an undo stack (last in, first out).</p>
+
+    <label>Device</label>
+    <select value="@State.Ui.CommandDeviceId" @onchange="OnDeviceChanged">
+        <option value="">-- choose an actuator --</option>
+        @foreach (var actuator in Actuators)
+        {
+            <option value="@actuator.DeviceId">@actuator.Name (@(actuator.ActuatorOn == true ? "ON" : "OFF"))</option>
+        }
+    </select>
+
+    <label>Action</label>
+    <select value="@State.Ui.CommandAction.ToString()" @onchange="OnActionChanged">
+        <option value="@CommandAction.TurnOn">Turn ON / trigger</option>
+        <option value="@CommandAction.TurnOff">Turn OFF</option>
+        <option value="@CommandAction.Toggle">Toggle</option>
+    </select>
+
+    <div class="button-row">
+        <button class="cta-button" disabled="@(_busy || string.IsNullOrEmpty(State.Ui.CommandDeviceId))"
+                @onclick="SendAsync">Send command</button>
+        <button class="cta-button cta-danger" disabled="@_busy" @onclick="ShutDownValvesAsync">Shut down all valves</button>
+        <button class="cta-button cta-secondary" disabled="@(_busy || State.Commands.UndoStack.Count == 0)"
+                @onclick="UndoAsync">↩ Undo last</button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <p class="form-message">@_message</p>
+    }
+
+    <h3>Undo stack <small>(top = next to undo)</small></h3>
+    @if (State.Commands.UndoStack.Count == 0)
+    {
+        <p class="muted">Empty.</p>
+    }
+    else
+    {
+        <ol class="stack-list">
+            @foreach (var command in State.Commands.UndoStack)
+            {
+                <li>@command.Description <small>@command.IssuedUtc.ToString("HH:mm:ss")</small></li>
+            }
+        </ol>
+    }
+
+    <h3>Command history</h3>
+    @if (State.Commands.History.Count == 0)
+    {
+        <p class="muted">No commands issued yet.</p>
+    }
+    else
+    {
+        <ul class="history-list">
+            @foreach (var command in State.Commands.History.Take(8))
+            {
+                <li class="@(command.IsUndoEntry ? "history-undo" : "") @(command.Status == CommandStatus.Undone ? "history-reverted" : "")">
+                    <span>@command.Description</span>
+                    <small>@command.IssuedUtc.ToString("HH:mm:ss")@(command.Status == CommandStatus.Undone ? " · undone" : "")</small>
+                </li>
+            }
+        </ul>
+    }
+</div>
+
+@code {
+    private bool _busy;
+    private string _message = string.Empty;
+
+    private IEnumerable<DeviceState> Actuators =>
+        State.Devices.Values.Where(d => d.Category == SensorCategory.Actuator).OrderBy(d => d.Name);
+
+    private void OnDeviceChanged(ChangeEventArgs e) => State.Ui.CommandDeviceId = e.Value?.ToString() ?? string.Empty;
+
+    private void OnActionChanged(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<CommandAction>(e.Value?.ToString(), out var action))
+        {
+            State.Ui.CommandAction = action;
+        }
+    }
+
+    private Task SendAsync() => RunAsync(() => Api.IssueCommandAsync(State.Ui.CommandAction, State.Ui.CommandDeviceId));
+
+    private Task ShutDownValvesAsync() => RunAsync(() => Api.IssueCommandAsync(CommandAction.ShutDownAllValves, "*"));
+
+    private Task UndoAsync() => RunAsync(() => Api.UndoLastCommandAsync());
+
+    private async Task RunAsync(Func<Task<CommandResult>> action)
+    {
+        _busy = true;
+        _message = string.Empty;
+
+        try
+        {
+            var result = await action();
+            _message = result.Success ? $"✅ {result.Message}" : $"⚠️ {result.Message}";
+        }
+        catch (Exception ex)
+        {
+            _message = $"⚠️ Could not reach the gateway: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}
